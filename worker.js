@@ -368,6 +368,7 @@ const processMeetings = async (domain, hubId, q) => {
   await saveDomain(domain);
 
   return true;
+
 }
 
 const createQueue = (domain, actions) => queue(async (action, callback) => {
