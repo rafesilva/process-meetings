@@ -266,6 +266,42 @@ const processMeetings = async (domain, hubId, q) => {
   const account = domain.integrations.hubspot.accounts.find(account => account.hubId === hubId)
 
   console.log('process meetings account2', account)
+
+  const lastPulledDate = new Date(account.lastPulledDates.meetings || 0)
+  const now = new Date()
+  let notEmpty = true
+  const offset = {}
+  const limit = 50
+
+  while (notEmpty) {
+    const lastModifiedDate = offset.lastModifiedDate
+    const lastModifiedDateFilter = generateLastModifiedDateFilter(lastModifiedDate, now)
+    const searchObj = {
+      groups:[lastModifiedDateFilter],
+      sorts:[{propertyName:'hs_lastmodifieddate', direction:'ASCENDING'}],
+      properties: ['hs_meeting_title', 'createAt', 'updateAt'],
+      limit,
+      after: offset.after
+    }
+
+    let searchResult = {}
+    let tryCount = 0
+
+    while (tryCount <= 4) {
+      try {
+        searchResult = await hubspotClient.crm.objects.searchApi.doSearch('meetings', searchObj)
+        break
+      } catch {
+        tryCount++
+        if (new Date() > expirationDate) await refreshAccessToken(domain, hubId)
+          
+        await new Promise(resolve => setTimeout(resolve, 5000 * Match.pow(2, tryCount)))
+      }
+    }
+    
+    console.log('searchResult', searchResult)
+    notEmpty = false
+  }
 }
 
 const createQueue = (domain, actions) => queue(async (action, callback) => {
