@@ -1,10 +1,3 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-node_modules
-.env
-=======
-=======
->>>>>>> c6a48f2 (Improved .gitignore)
 # Logs
 logs
 *.log
@@ -135,11 +128,3 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
-<<<<<<< HEAD
->>>>>>> c397d3d (Initial commit)
-=======
-=======
-node_modules
-.env
->>>>>>> e4d5615 (Created processMeetings function)
->>>>>>> c6a48f2 (Improved .gitignore)
