@@ -2,7 +2,7 @@ const hubspot = require('@hubspot/api-client');
 const { queue } = require('async');
 const _ = require('lodash');
 
-const { filterNullValuesFromObject, goal } = require('./utils');
+const { filterNullValuesFromObject, goal, safeExecute } = require('./utils');
 const Domain = require('./Domain');
 
 const hubspotClient = new hubspot.Client({ accessToken: '' });
@@ -385,34 +385,12 @@ const pullDataFromHubspot = async () => {
     const actions = [];
     const actionQueue = createQueue(domain, actions);
 
-    try {
-      await processContacts(domain, account.hubId, actionQueue);
-      console.log('process contacts');
-    } catch (err) {
-      console.log(err, { apiKey: domain.apiKey, metadata: { operation: 'processContacts', hubId: account.hubId } });
-    }
-
-    try {
-      await processCompanies(domain, account.hubId, actionQueue);
-      console.log('process companies');
-    } catch (err) {
-      console.log(err, { apiKey: domain.apiKey, metadata: { operation: 'processCompanies', hubId: account.hubId } });
-    }
-
-    try {
-      await processMeetings(domain, account.hubId, actionQueue);
-      console.log('process meetings');
-    } catch (err) {
-      console.log(err, { apiKey: domain.apiKey, metadata: { operation: 'processMeetings', hubId: account.hubId } });
-    }
-
-    try {
-      await drainQueue(domain, actions, actionQueue);
-      console.log('drain queue');
-    } catch (err) {
-      console.log(err, { apiKey: domain.apiKey, metadata: { operation: 'drainQueue', hubId: account.hubId } });
-    }
-
+    [processContacts,processCompanies,processMeetings,drainQueue].forEach( async fn => {
+      await safeExecute([fn], async () => {
+        await fn(domain, account.hubId, actionQueue);
+      }, { apiKey: domain.apiKey, hubId: account.hubId });
+    })
+   
     await saveDomain(domain);
 
     console.log('finish processing account');

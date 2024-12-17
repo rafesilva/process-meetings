@@ -9,6 +9,15 @@ const disallowedValues = [
   'n/a'
 ];
 
+const safeExecute = async (operationName, fn, metadata = {}) => {
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(`Error in operation: ${operationName}`, { error: err.message, metadata });
+    throw err;
+  }
+};
+
 const filterNullValuesFromObject = object =>
   Object
     .fromEntries(
@@ -30,5 +39,6 @@ const goal = actions => {
 module.exports = {
   filterNullValuesFromObject,
   normalizePropertyName,
-  goal
+  goal,
+  safeExecute
 };
