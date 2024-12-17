@@ -1,7 +1,6 @@
 const NodeCache = require('node-cache');
 const tokenCache = new NodeCache({ stdTTL: 3500 });
 
-
 const disallowedValues = [
   '[not provided]',
   'placeholder',
@@ -13,10 +12,79 @@ const disallowedValues = [
   'n/a'
 ];
 
+const createAction = (companyOrMeeting, actionTemplate, lastPulledDate) => {
+  
+  const isCreated = !lastPulledDate || (new Date(companyOrMeeting.createdAt) > lastPulledDate)
 
-function findHubspotAccount(domain, hubId) {
+  return ({
+    actionName: isCreated ? `${[companyOrMeeting]} Created` : `${[companyOrMeeting]} Updated`,
+    actionDate: new Date(isCreated ? companyOrMeeting.createdAt : companyOrMeeting.updatedAt) - 2000,
+    ...actionTemplate
+  })
+};
+
+const createSearchFilter = (properties, lastModifiedDate, now) => {
+  return {
+    groups: [generateLastModifiedDateFilter(lastModifiedDate, now)],
+    sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
+    properties,
+    limit: 100
+  }
+}
+
+const findHubspotAccount = (domain, hubId) => {
   return domain.integrations.hubspot.accounts.find(account => account.hubId === hubId);
 }
+
+const fetchDataWithRetry = async (type=null, hubspotClient, searchObj, expirationDate, domain, hubId) => {
+  let searchResult = {};
+  let tryCount = 0;
+
+  while (tryCount <= 4) {
+    try {
+      searchResult = await hubspotClient.crm.objects.searchApi.doSearch(type, searchObj);
+      return searchResult;
+    } catch {
+      tryCount++;
+      if (new Date() > expirationDate) await refreshAccessToken(domain, hubId, hubspotClient);
+      await new Promise(resolve => setTimeout(resolve, 5000 * Math.pow(2, tryCount)));
+    }
+  }
+
+  throw new Error(`Failed to fetch ${type} after 4 attempts. Aborting.`);
+}
+
+const filterNullValuesFromObject = object =>
+  Object
+    .fromEntries(
+      Object
+        .entries(object)
+        .filter(([_, v]) =>
+          v !== null &&
+          v !== '' &&
+          typeof v !== 'undefined' &&
+          (typeof v !== 'string' || !disallowedValues.includes(v.toLowerCase()) || !v.toLowerCase().includes('!$record'))));
+
+
+const generateLastModifiedDateFilter = (date, nowDate, propertyName = 'hs_lastmodifieddate') => {
+  const lastModifiedDateFilter = date ?
+    {
+      filters: [
+        { propertyName, operator: 'GTE', value: `${date.valueOf()}` },
+        { propertyName, operator: 'LTE', value: `${nowDate.valueOf()}` }
+      ]
+    } :
+    {};
+
+  return lastModifiedDateFilter;
+}
+
+const goal = actions => {
+  // this is where the data will be written to the database
+  console.log(actions);
+};
+
+const normalizePropertyName = key => key.toLowerCase().replace(/__c$/, '').replace(/^_+|_+$/g, '').replace(/_+/g, '_');
 
 /**
  * Get access token from HubSpot
@@ -69,30 +137,30 @@ const safeExecute = async (operationName, fn, metadata = {}) => {
   }
 };
 
-const filterNullValuesFromObject = object =>
-  Object
-    .fromEntries(
-      Object
-        .entries(object)
-        .filter(([_, v]) =>
-          v !== null &&
-          v !== '' &&
-          typeof v !== 'undefined' &&
-          (typeof v !== 'string' || !disallowedValues.includes(v.toLowerCase()) || !v.toLowerCase().includes('!$record'))));
+const updatePaginationState = (offsetObject, data, maxOffset = 9900) => {
+  if (!offsetObject?.after) {
+    return false; 
+  }
 
-const normalizePropertyName = key => key.toLowerCase().replace(/__c$/, '').replace(/^_+|_+$/g, '').replace(/_+/g, '_');
+  if (offsetObject?.after >= maxOffset) {
+    offsetObject.after = 0; 
+    offsetObject.lastModifiedDate = new Date(data[data.length - 1].updatedAt).valueOf();
+  }
 
-const goal = actions => {
-  // this is where the data will be written to the database
-  console.log(actions);
-};
+  return true; 
+}
 
 module.exports = {
+  createAction,
+  createSearchFilter,
+  fetchDataWithRetry,
   filterNullValuesFromObject,
   findHubspotAccount,
+  generateLastModifiedDateFilter,
   normalizePropertyName,
   goal,
   refreshAccessToken,
   saveDomain,
-  safeExecute
+  safeExecute,
+  updatePaginationState
 };

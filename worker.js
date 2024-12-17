@@ -2,53 +2,13 @@ const hubspot = require('@hubspot/api-client');
 const { queue } = require('async');
 const _ = require('lodash');
 
-const { filterNullValuesFromObject, findHubspotAccount, goal, refreshAccessToken, saveDomain, safeExecute } = require('./utils');
+const { createAction, createSearchFilter, fetchDataWithRetry, filterNullValuesFromObject, findHubspotAccount, goal, refreshAccessToken, saveDomain, safeExecute, updatePaginationState } = require('./utils');
 const Domain = require('./Domain');
 
 const hubspotClient = new hubspot.Client({ accessToken: '' });
 const propertyPrefix = 'hubspot__';
+
 let expirationDate;
-
-const generateLastModifiedDateFilter = (date, nowDate, propertyName = 'hs_lastmodifieddate') => {
-  const lastModifiedDateFilter = date ?
-    {
-      filters: [
-        { propertyName, operator: 'GTE', value: `${date.valueOf()}` },
-        { propertyName, operator: 'LTE', value: `${nowDate.valueOf()}` }
-      ]
-    } :
-    {};
-
-  return lastModifiedDateFilter;
-};
-
-
-function createSearchFilter(properties, lastModifiedDate, now) {
-  return {
-    groups: [generateLastModifiedDateFilter(lastModifiedDate, now)],
-    sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
-    properties,
-    limit: 100
-  }
-}
-
-async function fetchDataWithRetry(type=null,hubspotClient, searchObj, expirationDate, domain, hubId) {
-  let searchResult = {};
-  let tryCount = 0;
-
-  while (tryCount <= 4) {
-    try {
-      searchResult = await hubspotClient.crm.objects.searchApi.doSearch(type, searchObj);
-      return searchResult;
-    } catch {
-      tryCount++;
-      if (new Date() > expirationDate) await refreshAccessToken(domain, hubId, hubspotClient);
-      await new Promise(resolve => setTimeout(resolve, 5000 * Math.pow(2, tryCount)));
-    }
-  }
-
-  throw new Error(`Failed to fetch ${type} after 4 attempts. Aborting.`);
-}
 
 /**
  * Get recently modified companies as 100 companies per page
@@ -96,22 +56,14 @@ const processCompanies = async (domain, hubId, q) => {
         }
       };
 
-      const isCreated = !lastPulledDate || (new Date(company.createdAt) > lastPulledDate);
-
-      q.push({
-        actionName: isCreated ? 'Company Created' : 'Company Updated',
-        actionDate: new Date(isCreated ? company.createdAt : company.updatedAt) - 2000,
-        ...actionTemplate
-      });
+      q.push(createAction(
+        company, 
+        actionTemplate,
+        lastPulledDate
+      ));
     });
 
-    if (!offsetObject?.after) {
-      hasMore = false;
-      break;
-    } else if (offsetObject?.after >= 9900) {
-      offsetObject.after = 0;
-      offsetObject.lastModifiedDate = new Date(data[data.length - 1].updatedAt).valueOf();
-    }
+    hasMore = updatePaginationState(offsetObject, data);
   }
 
   account.lastPulledDates.companies = now;
@@ -148,7 +100,7 @@ const processContacts = async (domain, hubId, q) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = fetchDataWithRetry('contacts',hubspotClient, searchObject, expirationDate, domain, hubId)
+    let searchResult = fetchDataWithRetry('contacts', hubspotClient, searchObject, expirationDate, domain, hubId)
 
     const data = searchResult.results || [];
 
@@ -193,21 +145,14 @@ const processContacts = async (domain, hubId, q) => {
         identity: contact.properties.email,
         userProperties: filterNullValuesFromObject(userProperties)
       };
-
-      q.push({
-        actionName: isCreated ? 'Contact Created' : 'Contact Updated',
-        actionDate: new Date(isCreated ? contact.createdAt : contact.updatedAt),
-        ...actionTemplate
-      });
+      q.push(createAction(
+        contact, 
+        actionTemplate,
+        lastPulledDate
+      ));
     });
 
-    if (!offsetObject?.after) {
-      hasMore = false;
-      break;
-    } else if (offsetObject?.after >= 9900) {
-      offsetObject.after = 0;
-      offsetObject.lastModifiedDate = new Date(data[data.length - 1].updatedAt).valueOf();
-    }
+    hasMore = updatePaginationState(offsetObject, data);
   }
 
   account.lastPulledDates.contacts = now;
@@ -226,10 +171,10 @@ const processMeetings = async (domain, hubId, q) => {
 
   const lastPulledDate = new Date(account.lastPulledDates.meetings || 0)
   const now = new Date()
-  let notEmpty = true
+  let hasMore = true
   const offset = {}
 
-  while (notEmpty) {
+  while (hasMore) {
     const lastModifiedDate = offset.lastModifiedDate || lastPulledDate;
     const properties = ['hs_meeting_title', 'createdAt', 'updatedAt']
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
@@ -283,28 +228,21 @@ const processMeetings = async (domain, hubId, q) => {
           }
         };
 
-        q.push({
-          actionName: isCreated ? 'Meeting Created' : 'Meeting Updated',
-          actionDate: new Date(isCreated ? meeting.properties.createdAt : meeting.properties.updatedAt),
-          ...actionTemplate
-        });
+        q.push(createAction(
+          meeting, 
+          actionTemplate,
+          lastPulledDate
+        ));
       })
     })
 
-    if (!offset?.after) {
-      notEmpty = false
-      break
-    } else if (offset?.after >= 9900) {
-      offset.after = 0;
-      offset.lastModifiedDate = new Date(data[data.length - 1].updatedAt).valueOf();
-    }
+    hasMore = updatePaginationState(offsetObject, data);
   }
 
   account.lastPulledDates.meetings = now;
   await saveDomain(domain);
 
   return true;
-
 }
 
 const createQueue = (domain, actions) => queue(async (action, callback) => {
