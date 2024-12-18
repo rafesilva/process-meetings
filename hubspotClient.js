@@ -6,10 +6,8 @@ const getHubSpotClient = () => {
     return hubspotClient
 }
 
-const getBatchApi = (meetingId) => {
-    return hubspotClient.crm.associations.batchApi.read(
-        'meetings', 'contacts', { inputs: [{ id: meetingId }] }
-      );
+const getBatchApi = () => {
+    return hubspotClient.crm.associations.batchApi
 }
 
 module.exports = {getHubSpotClient, getBatchApi}
