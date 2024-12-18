@@ -39,10 +39,11 @@ const findHubspotAccount = (domain, hubId) => {
 const fetchDataWithRetry = async (type=null, hubspotClient, searchObj, expirationDate, domain, hubId) => {
   let searchResult = {};
   let tryCount = 0;
-
+  console.log('fetchDataWithRetry inner', type=null, hubspotClient, searchObj, expirationDate, domain, hubId)
   while (tryCount <= 4) {
     try {
       searchResult = await hubspotClient.crm.objects.searchApi.doSearch(type, searchObj);
+      console.log('searchResult',searchResult)
       return searchResult;
     } catch {
       tryCount++;
@@ -52,6 +53,28 @@ const fetchDataWithRetry = async (type=null, hubspotClient, searchObj, expiratio
   }
 
   throw new Error(`Failed to fetch ${type} after 4 attempts. Aborting.`);
+}
+
+const getContactAssociationsResult = async ( meetingId, hubspotClient) => {
+  try {
+    const contactAssociationsResult = await hubspotClient.crm.associations.batchApi.read(
+      'meetings', 'contacts', { inputs: [{ id: meetingId }] }
+    );
+    return contactAssociationsResult
+  } catch (err) {
+    console.error(`Error fetching associations for meeting ${meetingId}:`, err);
+    return;
+  }
+}
+
+const getContactDetails = async (contactId, hubspotClient) => {
+  try {
+    const contactDetails = await hubspotClient.crm.contacts.basicApi.getById(contactId, ['email']);
+    return contactDetails
+  } catch (err) {
+    console.error(`Error fetching details for contact ${contactId}:`, err);
+    return;
+  }
 }
 
 const filterNullValuesFromObject = object =>
@@ -116,7 +139,7 @@ const refreshAccessToken = async (domain, hubId, hubspotClient) => {
   hubspotClient.setAccessToken(newAccessToken);
 
   account.accessToken = newAccessToken;
-  return true;
+  return [true,expirationDate];
 };
 
 const saveDomain = async domain => {
@@ -151,6 +174,8 @@ const updatePaginationState = (offsetObject, data, maxOffset = 9900) => {
 }
 
 module.exports = {
+  getContactDetails,
+  getContactAssociationsResult,
   createAction,
   createSearchFilter,
   fetchDataWithRetry,

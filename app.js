@@ -25,7 +25,7 @@ mongoose
     require('./Domain');
 
     // worker setup
-    require('./worker')();
+    require('./worker').pullDataFromHubspot();
   });
 
 process.env.instance = 'app';
