@@ -11,18 +11,9 @@ const {
 } = require('./utils');
 
 jest.mock('./utils');
-const hubspotClient = {
-    crm: {
-      associations: {
-        batchApi: { read: jest.fn() },
-      },
-      contacts: {
-        basicApi: { getById: jest.fn() },
-      },
-    },
-  };
+
 describe('HubSpot Data Processing', () => {
-  let mockDomain, mockHubId, mockQueue;
+  let mockDomain, mockAccount, mockHubId, mockQueue;
   const fixedDate = new Date('2024-06-01T00:00:00Z'); 
 
   beforeAll(() => {
@@ -45,7 +36,7 @@ describe('HubSpot Data Processing', () => {
         },
       },
     };
-
+    mockAccount = mockDomain.integrations.hubspot.accounts[0]
     mockHubId = '1234';
     mockQueue = { push: jest.fn() };
 
@@ -53,7 +44,7 @@ describe('HubSpot Data Processing', () => {
       lastPulledDates: { companies: fixedDate, contacts: fixedDate, meetings: fixedDate },
     });
 
-    createSearchFilter.mockImplementation((properties, lastModifiedDate, now) => ({
+    createSearchFilter.mockImplementation((properties, lastModifiedDate) => ({
       groups: [{ filters: [{ propertyName: 'hs_lastmodifieddate', operator: 'GT', value: lastModifiedDate }] }],
       properties,
       sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
@@ -61,7 +52,8 @@ describe('HubSpot Data Processing', () => {
     }));
 
     let callCount = 0;
-    fetchDataWithRetry.mockImplementation((type, client, searchObject) => {
+
+    fetchDataWithRetry.mockImplementation((type, searchObject) => {
       if (!searchObject.after) searchObject.after = 0;
 
       if (callCount < 2) { 
@@ -104,7 +96,7 @@ describe('HubSpot Data Processing', () => {
   });
 
   it('should process companies and push actions to the queue', async () => {
-    await processCompanies(mockDomain, mockHubId, mockQueue);
+    await processCompanies('companies', mockDomain, mockAccount, mockHubId, mockQueue, fixedDate);
 
     expect(fetchDataWithRetry).toHaveBeenCalledTimes(3);
     expect(mockQueue.push).toHaveBeenCalledTimes(2);
@@ -112,7 +104,7 @@ describe('HubSpot Data Processing', () => {
   });
 
   it('should process contacts and push actions to the queue', async () => {
-    await processContacts(mockDomain, mockHubId, mockQueue);
+    await processContacts('contacts', mockDomain, mockAccount, mockHubId, mockQueue, fixedDate);
 
     expect(fetchDataWithRetry).toHaveBeenCalledTimes(3);
     expect(mockQueue.push).toHaveBeenCalledTimes(2);
@@ -120,7 +112,7 @@ describe('HubSpot Data Processing', () => {
   });
 
   it('should process meetings and push actions to the queue', async () => {
-    await processMeetings(mockDomain, mockHubId, mockQueue, fixedDate);
+    await processMeetings('meetings', mockDomain, mockAccount, mockHubId, mockQueue, fixedDate);
 
     expect(fetchDataWithRetry).toHaveBeenCalledTimes(3);
     expect(mockQueue.push).toHaveBeenCalledTimes(4);

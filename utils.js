@@ -39,7 +39,6 @@ const findHubspotAccount = (domain, hubId) => {
 const fetchDataWithRetry = async (type=null, hubspotClient, searchObj, expirationDate, domain, hubId) => {
   let searchResult = {};
   let tryCount = 0;
-  console.log('fetchDataWithRetry inner', type=null, hubspotClient, searchObj, expirationDate, domain, hubId)
   while (tryCount <= 4) {
     try {
       searchResult = await hubspotClient.crm.objects.searchApi.doSearch(type, searchObj);
@@ -112,10 +111,10 @@ const normalizePropertyName = key => key.toLowerCase().replace(/__c$/, '').repla
 /**
  * Get access token from HubSpot
  */
-const refreshAccessToken = async (domain, hubId, hubspotClient) => {
+const refreshAccessToken = async (account, hubId, hubspotClient) => {
   console.log('refreshing access token')
   const { HUBSPOT_CID, HUBSPOT_CS } = process.env;
-  const account = findHubspotAccount(domain, hubId);
+  // const account = findHubspotAccount(domain, hubId);
 
   const cachedToken = tokenCache.get(`accessToken_${hubId}`);
   console.log('token cached')
@@ -145,7 +144,6 @@ const refreshAccessToken = async (domain, hubId, hubspotClient) => {
 const saveDomain = async domain => {
   // disable this for testing purposes
   return;
-
   domain.markModified('integrations.hubspot.accounts');
   await domain.save();
 };
