@@ -1,25 +1,20 @@
 const _ = require('lodash');
 const { queue } = require('async');
-
 const { getContactDetails, getContactAssociationsResult, createAction, createSearchFilter, fetchDataWithRetry, filterNullValuesFromObject, findHubspotAccount, goal, refreshAccessToken, saveDomain, safeExecute, updatePaginationState } = require('./utils');
-const Domain = require('./Domain');
-
-const propertyPrefix = 'hubspot__';
+// const propertyPrefix = 'hubspot__';
 const {getHubSpotClient} = require('./hubspotClient')
 const hubspotClient = getHubSpotClient()
+const Domain = require('./Domain');
+const now = new Date();
+
 
 /**
  * Get recently modified companies as 100 companies per page
  */
-const processCompanies = async (domain, hubId, q, expirationDate) => {
-  const account = findHubspotAccount(domain, hubId);
-  const lastPulledDate = new Date(account.lastPulledDates.companies);
-  const now = new Date();
+const processCompanies = async (processType, domain, account, hubId, q, expirationDate, lastPulledDate) => {
 
   let hasMore = true;
   const offsetObject = {};
-
-  // const limit = 100;
 
   while (hasMore) {
     const lastModifiedDate = offsetObject.lastModifiedDate || lastPulledDate;
@@ -36,11 +31,9 @@ const processCompanies = async (domain, hubId, q, expirationDate) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = await fetchDataWithRetry('companies', hubspotClient, searchObject, expirationDate, domain, hubId)
+    let searchResult = await fetchDataWithRetry(processType, hubspotClient, searchObject, expirationDate, domain, hubId)
     // console.log(' searchResult', searchResult)
-
     const data = searchResult?.results || [];
-    console.log('data', data)
     offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
 
     console.log('fetch company batch');
@@ -64,11 +57,8 @@ const processCompanies = async (domain, hubId, q, expirationDate) => {
       ));
     });
     // hasMore = !!offsetObject.after
-    console.log('offsetObject', offsetObject)
     hasMore = updatePaginationState(offsetObject, data);
-    console.log('hasMore', hasMore)
   }
-
   account.lastPulledDates.companies = now;
   await saveDomain(domain);
 
@@ -78,14 +68,10 @@ const processCompanies = async (domain, hubId, q, expirationDate) => {
 /**
  * Get recently modified contacts as 100 contacts per page
  */
-const processContacts = async (domain, hubId, q, expirationDate) => {
-  const account = findHubspotAccount(domain, hubId);
-  const lastPulledDate = new Date(account.lastPulledDates.contacts);
-  const now = new Date();
+const processContacts = async (processType, domain, account, hubId, q, expirationDate, lastPulledDate) => {
 
   let hasMore = true;
   const offsetObject = {};
-  // const limit = 100;
 
   while (hasMore) {
     const lastModifiedDate = offsetObject.lastModifiedDate || lastPulledDate;
@@ -103,13 +89,10 @@ const processContacts = async (domain, hubId, q, expirationDate) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = await fetchDataWithRetry('contacts', hubspotClient, searchObject, expirationDate, domain, hubId)
-    
-    console.log('searchResult contacts', searchResult)
-    
+    let searchResult = await fetchDataWithRetry(processType, hubspotClient, searchObject, expirationDate, domain, hubId)
+        
     const data = searchResult.results || [];
 
-    console.log('data', data)
     console.log('fetch contact batch');
 
     offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
@@ -157,7 +140,6 @@ const processContacts = async (domain, hubId, q, expirationDate) => {
     });
 
     hasMore = updatePaginationState(offsetObject, data);
-    console.log('hasMore contacts', hasMore)
   }
 
   account.lastPulledDates.contacts = now;
@@ -169,13 +151,10 @@ const processContacts = async (domain, hubId, q, expirationDate) => {
 /**
  * Get recently modified meetings as 100 meetings per page
  */
-const processMeetings = async (domain, hubId, q, expirationDate) => {
-  const account = findHubspotAccount(domain, hubId);
+const processMeetings = async (processType, domain, account, hubId, q, expirationDate, lastPulledDate) => {
 
-  // console.log('process meetings account', account)
+  console.log('processing meetings')
 
-  const lastPulledDate = new Date(account.lastPulledDates.meetings)
-  const now = new Date()
   let hasMore = true
   const offsetObject = {}
 
@@ -185,19 +164,17 @@ const processMeetings = async (domain, hubId, q, expirationDate) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = await fetchDataWithRetry('meetings', hubspotClient, searchObject, expirationDate, domain, hubId)
+    let searchResult = await fetchDataWithRetry(processType, hubspotClient, searchObject, expirationDate, domain, hubId)
     const data = searchResult.results || []
     offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
 
-    console.log('meeting batch')
+    console.log(`${processType} batch`)
 
     data.forEach( async meeting => {
       if (!meeting.properties) return;
 
       const meetingId = meeting.id;
-
       let contactAssociationsResult = await getContactAssociationsResult(meetingId, hubspotClient)
-      
       
       const associatedContacts = contactAssociationsResult.results?.flatMap(association => {
         return association.to ? association.to.map(contact => contact.id) : [];
@@ -217,7 +194,6 @@ const processMeetings = async (domain, hubId, q, expirationDate) => {
             contact_email: contactEmail
           }
         };
-
         q.push(createAction(
           meeting, 
           actionTemplate,
@@ -228,10 +204,8 @@ const processMeetings = async (domain, hubId, q, expirationDate) => {
 
     hasMore = updatePaginationState(offsetObject, data);
   }
-
   account.lastPulledDates.meetings = now;
   await saveDomain(domain);
-
   return true;
 }
 
@@ -239,18 +213,19 @@ const createQueue = (domain, actions) => queue(async (action, callback) => {
   actions.push(action);
 
   if (actions.length > 2000) {
-    console.log('inserting actions to database', { apiKey: domain.apiKey, count: actions.length });
 
-    const copyOfActions = _.cloneDeep(actions);
-    actions.splice(0, actions.length);
+      console.log('inserting actions to database', { apiKey: domain.apiKey, count: actions.length });
 
-    goal(copyOfActions);
+      const copyOfActions = _.cloneDeep(actions);
+      actions.splice(0, actions.length);
+
+      goal(copyOfActions);
   }
 
   callback();
 }, 100000000);
 
-const drainQueue = async (domain, actions, q) => {
+const drainQueue = async (actions, q) => {
   if (q.length() > 0) await q.drain();
 
   if (actions.length > 0) {
@@ -261,26 +236,40 @@ const drainQueue = async (domain, actions, q) => {
 };
 
 const pullDataFromHubspot = async () => {
+
   console.log('start pulling data from HubSpot');
 
   const domain = await Domain.findOne({});
+  // const account = findHubspotAccount(domain, hubId);
 
   for (const account of domain.integrations.hubspot.accounts) {
-    console.log('start processing account');
 
-    // await safeExecute('refreshAccessToken', async () => {
-    const [isAuth, expirationDate] = await refreshAccessToken(domain, account.hubId, hubspotClient);
-    // }, { apiKey: domain.apiKey, hubId: account.hubId });
+    const [isAuth, expirationDate] = await refreshAccessToken(account, account.id, hubspotClient);
+    
+    console.log('isAuth', isAuth)
+    
+    if (!isAuth) throw new Error('Not authorized')
+    
+    console.log('start processing account');
 
     const actions = [];
     const actionQueue = createQueue(domain, actions);
 
-    [processContacts,processCompanies,processMeetings,drainQueue].forEach( async fn => {
+    [processContacts,processCompanies,processMeetings].forEach( async fn => {
+      const processType = fn.name.replace('process', '').toLowerCase()
+      console.log('processing type: ', processType.replace('process', '').toLowerCase())
+      // console.log('account.lastPulledDates: ', account.lastPulledDates)
+
+      const lastPulledDate = account.lastPulledDates[processType] && new Date(account.lastPulledDates[processType]) || new Date(now)
+      console.log(`${processType} lastPulledDate: `, lastPulledDate)
+
       await safeExecute([fn], async () => {
-        await fn(domain, account.hubId, actionQueue, expirationDate);
+        await fn(processType, domain, account, account.id, actionQueue, expirationDate, lastPulledDate);
       }, { apiKey: domain.apiKey, hubId: account.hubId });
+      await drainQueue(actions, actionQueue)
+
     })
-   
+
     await saveDomain(domain);
 
     console.log('finish processing account');
