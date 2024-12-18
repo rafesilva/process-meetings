@@ -1,25 +1,24 @@
-const hubspot = require('@hubspot/api-client');
-const { queue } = require('async');
 const _ = require('lodash');
+const { queue } = require('async');
 
-const { createAction, createSearchFilter, fetchDataWithRetry, filterNullValuesFromObject, findHubspotAccount, goal, refreshAccessToken, saveDomain, safeExecute, updatePaginationState } = require('./utils');
+const { getContactDetails, getContactAssociationsResult, createAction, createSearchFilter, fetchDataWithRetry, filterNullValuesFromObject, findHubspotAccount, goal, refreshAccessToken, saveDomain, safeExecute, updatePaginationState } = require('./utils');
 const Domain = require('./Domain');
 
-const hubspotClient = new hubspot.Client({ accessToken: '' });
 const propertyPrefix = 'hubspot__';
-
-let expirationDate;
+const {getHubSpotClient} = require('./hubspotClient')
+const hubspotClient = getHubSpotClient()
 
 /**
  * Get recently modified companies as 100 companies per page
  */
-const processCompanies = async (domain, hubId, q) => {
+const processCompanies = async (domain, hubId, q, expirationDate) => {
   const account = findHubspotAccount(domain, hubId);
   const lastPulledDate = new Date(account.lastPulledDates.companies);
   const now = new Date();
 
   let hasMore = true;
   const offsetObject = {};
+
   // const limit = 100;
 
   while (hasMore) {
@@ -37,10 +36,12 @@ const processCompanies = async (domain, hubId, q) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = fetchDataWithRetry('companies', hubspotClient, searchObject, expirationDate, domain, hubId)
+    let searchResult = await fetchDataWithRetry('companies', hubspotClient, searchObject, expirationDate, domain, hubId)
+    // console.log(' searchResult', searchResult)
 
     const data = searchResult?.results || [];
-    offsetObject.after = parseInt(searchResult?.paging?.next?.after);
+    console.log('data', data)
+    offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
 
     console.log('fetch company batch');
 
@@ -62,8 +63,10 @@ const processCompanies = async (domain, hubId, q) => {
         lastPulledDate
       ));
     });
-
+    // hasMore = !!offsetObject.after
+    console.log('offsetObject', offsetObject)
     hasMore = updatePaginationState(offsetObject, data);
+    console.log('hasMore', hasMore)
   }
 
   account.lastPulledDates.companies = now;
@@ -75,7 +78,7 @@ const processCompanies = async (domain, hubId, q) => {
 /**
  * Get recently modified contacts as 100 contacts per page
  */
-const processContacts = async (domain, hubId, q) => {
+const processContacts = async (domain, hubId, q, expirationDate) => {
   const account = findHubspotAccount(domain, hubId);
   const lastPulledDate = new Date(account.lastPulledDates.contacts);
   const now = new Date();
@@ -100,13 +103,16 @@ const processContacts = async (domain, hubId, q) => {
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
     searchObject.after = offsetObject.after
 
-    let searchResult = fetchDataWithRetry('contacts', hubspotClient, searchObject, expirationDate, domain, hubId)
-
+    let searchResult = await fetchDataWithRetry('contacts', hubspotClient, searchObject, expirationDate, domain, hubId)
+    
+    console.log('searchResult contacts', searchResult)
+    
     const data = searchResult.results || [];
 
+    console.log('data', data)
     console.log('fetch contact batch');
 
-    offsetObject.after = parseInt(searchResult.paging?.next?.after);
+    offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
     const contactIds = data.map(contact => contact.id);
 
     // contact to company association
@@ -128,8 +134,6 @@ const processContacts = async (domain, hubId, q) => {
       if (!contact.properties || !contact.properties.email) return;
 
       const companyId = companyAssociations[contact.id];
-
-      const isCreated = new Date(contact.createdAt) > lastPulledDate;
 
       const userProperties = {
         company_id: companyId,
@@ -153,6 +157,7 @@ const processContacts = async (domain, hubId, q) => {
     });
 
     hasMore = updatePaginationState(offsetObject, data);
+    console.log('hasMore contacts', hasMore)
   }
 
   account.lastPulledDates.contacts = now;
@@ -164,26 +169,25 @@ const processContacts = async (domain, hubId, q) => {
 /**
  * Get recently modified meetings as 100 meetings per page
  */
-const processMeetings = async (domain, hubId, q) => {
-  const account = domain.integrations.hubspot.accounts.find(account => account.hubId === hubId)
+const processMeetings = async (domain, hubId, q, expirationDate) => {
+  const account = findHubspotAccount(domain, hubId);
 
   // console.log('process meetings account', account)
 
-  const lastPulledDate = new Date(account.lastPulledDates.meetings || 0)
+  const lastPulledDate = new Date(account.lastPulledDates.meetings)
   const now = new Date()
   let hasMore = true
-  const offset = {}
+  const offsetObject = {}
 
   while (hasMore) {
-    const lastModifiedDate = offset.lastModifiedDate || lastPulledDate;
+    const lastModifiedDate = offsetObject.lastModifiedDate || lastPulledDate;
     const properties = ['hs_meeting_title', 'createdAt', 'updatedAt']
     const searchObject = createSearchFilter(properties, lastModifiedDate, now)
-    searchObject.after = offset.after
+    searchObject.after = offsetObject.after
 
-    let searchResult = fetchDataWithRetry('meetings',hubspotClient, searchObject, expirationDate, domain, hubId)
-    
+    let searchResult = await fetchDataWithRetry('meetings', hubspotClient, searchObject, expirationDate, domain, hubId)
     const data = searchResult.results || []
-    offset.after = parseInt(searchResult.paging?.next.after)
+    offsetObject.after = parseInt(searchResult?.paging?.next?.after) || 0;
 
     console.log('meeting batch')
 
@@ -191,33 +195,19 @@ const processMeetings = async (domain, hubId, q) => {
       if (!meeting.properties) return;
 
       const meetingId = meeting.id;
-      let contactAssociationsResult;
 
-      try {
-        contactAssociationsResult = await hubspotClient.crm.associations.batchApi.read(
-          'meetings', 'contacts', { inputs: [{ id: meetingId }] }
-        );
-      } catch (err) {
-        console.error(`Error fetching associations for meeting ${meetingId}:`, err);
-        return;
-      }
-
+      let contactAssociationsResult = await getContactAssociationsResult(meetingId, hubspotClient)
+      
+      
       const associatedContacts = contactAssociationsResult.results?.flatMap(association => {
         return association.to ? association.to.map(contact => contact.id) : [];
       }) || [];
 
+      
       associatedContacts.forEach( async contactId=> {
-        let contactDetails;
-        try {
-          contactDetails = await hubspotClient.crm.contacts.basicApi.getById(contactId, ['email']);
-        } catch (err) {
-          console.error(`Error fetching details for contact ${contactId}:`, err);
-          return;
-        }
-
+        let contactDetails = await getContactDetails(contactId, hubspotClient)
+       
         const contactEmail = contactDetails?.properties?.email || 'Unknown';
-
-        const isCreated = new Date(meeting.properties.createdAt) > lastPulledDate;
 
         const actionTemplate = {
           includeInAnalytics: 0,
@@ -278,16 +268,16 @@ const pullDataFromHubspot = async () => {
   for (const account of domain.integrations.hubspot.accounts) {
     console.log('start processing account');
 
-    await safeExecute('refreshAccessToken', async () => {
-      await refreshAccessToken(domain, account.hubId, hubspotClient);
-    }, { apiKey: domain.apiKey, hubId: account.hubId });
+    // await safeExecute('refreshAccessToken', async () => {
+    const [isAuth, expirationDate] = await refreshAccessToken(domain, account.hubId, hubspotClient);
+    // }, { apiKey: domain.apiKey, hubId: account.hubId });
 
     const actions = [];
     const actionQueue = createQueue(domain, actions);
 
     [processContacts,processCompanies,processMeetings,drainQueue].forEach( async fn => {
       await safeExecute([fn], async () => {
-        await fn(domain, account.hubId, actionQueue);
+        await fn(domain, account.hubId, actionQueue, expirationDate);
       }, { apiKey: domain.apiKey, hubId: account.hubId });
     })
    
@@ -299,4 +289,9 @@ const pullDataFromHubspot = async () => {
   process.exit();
 };
 
-module.exports = pullDataFromHubspot;
+module.exports = {
+  processCompanies,
+  processContacts,
+  processMeetings,
+  pullDataFromHubspot
+}
